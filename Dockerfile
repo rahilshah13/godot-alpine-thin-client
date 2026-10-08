@@ -39,12 +39,13 @@ RUN openssl req -x509 -newkey rsa:2048 -nodes \
 RUN ln -s src/types.h types.h || true
 RUN make
 
-# Clone Godot 4.3 and patch missing <cstdint> in glslang and thorvg for GCC 14+
+# Clone Godot 4.3, patch missing <cstdint>, and build with use_lto=none and -U_FORTIFY_SOURCE to bypass musl/GCC 15 fortify inlining errors
 RUN git clone --branch 4.3-stable --depth 1 https://github.com/godotengine/godot.git /godot_src
 WORKDIR /godot_src
 RUN sed -i '/#include <unordered_map>/a #include <cstdint>' thirdparty/glslang/SPIRV/SpvBuilder.h
 RUN sed -i '/#include <list>/a #include <cstdint>' thirdparty/thorvg/inc/thorvg.h
-RUN scons platform=linuxbsd target=editor dev_build=no production=yes lto=none builtin_libtheora=yes -j4
+RUN scons platform=linuxbsd target=editor dev_build=no production=yes use_lto=none lto=none CCFLAGS="-U_FORTIFY_SOURCE" -j4
+
 # --- Runtime & Web Frontend Stage ---
 FROM alpine:latest
 
@@ -138,17 +139,17 @@ func _draw() -> void:
 	draw_circle(pos, 40, Color(0.3, 0.85, 1.0))
 EOF
 
-# --- Web Frontend Setup ---
+# --- Web Frontend Setup with Deflate Compressed Frame Streaming ---
 RUN mkdir -p /app/web
 WORKDIR /app/web
 RUN npm init -y && npm install express ws
 
-# Hardened server.js with non-blocking FIFO stream writing
 RUN cat << 'EOF' > server.js
 const express = require('express');
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const zlib = require('zlib');
 const { WebSocketServer } = require('ws');
 
 const app = express();
@@ -231,20 +232,26 @@ app.get('/', (req, res) => {
             drawPlaceholder('Connection lost');
         };
 
-        ws.onmessage = (event) => {
+        ws.onmessage = async (event) => {
             const view = new DataView(event.data);
             const nameLen = view.getUint32(0);
             const nameBytes = new Uint8Array(event.data, 4, nameLen);
             const frameName = new TextDecoder().decode(nameBytes);
-            const ppmBuffer = event.data.slice(4 + nameLen);
+            const compressedBuffer = event.data.slice(4 + nameLen);
 
-            const match = frameName.match(/frame_(\\d+)\\.ppm/);
-            latestFrameNum = match ? match[1] : frameName;
-            latestBuffer = ppmBuffer;
+            try {
+                const ds = new DecompressionStream('deflate');
+                const decompressedStream = new Response(compressedBuffer).body.pipeThrough(ds);
+                const ppmBuffer = await new Response(decompressedStream).arrayBuffer();
 
-            if (isPlaying) {
-                renderPPM(latestBuffer, latestFrameNum);
-            }
+                const match = frameName.match(/frame_(\\d+)\\.ppm/);
+                latestFrameNum = match ? match[1] : frameName;
+                latestBuffer = ppmBuffer;
+
+                if (isPlaying) {
+                    renderPPM(latestBuffer, latestFrameNum);
+                }
+            } catch (err) {}
         };
 
         function renderPPM(arrayBuffer, frameNum) {
@@ -375,26 +382,31 @@ setInterval(() => {
     try {
         const files = fs.readdirSync('/app')
             .filter(f => f.startsWith('frame_') && f.endsWith('.ppm'))
-            .map(f => ({ name: f, time: fs.statSync(path.join('/app', f)).mtime.getTime() }))
+            .map(f => ({ name: f, time: fs.statSync(path.join('/app', f)).mtime.getTime(), path: path.join('/app', f) }))
             .sort((a, b) => b.time - a.time);
 
         if (files.length > 0) {
-            const latestName = files[0].name;
-            const ppmBuffer = fs.readFileSync(path.join('/app', latestName));
-            
-            const nameBytes = Buffer.from(latestName, 'utf-8');
+            const latest = files[0];
+            const ppmBuffer = fs.readFileSync(latest.path);
+            const compressedBuffer = zlib.deflateSync(ppmBuffer);
+
+            const nameBytes = Buffer.from(latest.name, 'utf-8');
             const header = Buffer.alloc(4);
             header.writeUInt32BE(nameBytes.length, 0);
-            const payload = Buffer.concat([header, nameBytes, ppmBuffer]);
+            const payload = Buffer.concat([header, nameBytes, compressedBuffer]);
 
             wss.clients.forEach(client => {
                 if (client.readyState === client.OPEN) {
                     client.send(payload);
                 }
             });
+
+            for (let i = 1; i < files.length; i++) {
+                try { fs.unlinkSync(files[i].path); } catch (e) {}
+            }
         }
     } catch (e) {}
-}, 50);
+}, 20);
 
 server.listen(PORT, '0.0.0.0', () => {
     console.log('Live server running on http://0.0.0.0:' + PORT);
