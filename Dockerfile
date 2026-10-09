@@ -1,4 +1,4 @@
-# --- Build Stage for p9wl ---
+# --- Stage 1: Build p9wl Compositor ---
 FROM alpine:latest AS builder
 WORKDIR /app
 
@@ -39,14 +39,43 @@ RUN openssl req -x509 -newkey rsa:2048 -nodes \
 RUN ln -s src/types.h types.h || true
 RUN make
 
-# Clone Godot 4.3, patch missing <cstdint>, and build with use_lto=none and -U_FORTIFY_SOURCE to bypass musl/GCC 15 fortify inlining errors
+# --- Stage 2: Build Godot Standalone Template with Wayland Support (Cached) ---
+FROM alpine:latest AS godot-builder
+
+RUN echo "https://dl-cdn.alpinelinux.org/alpine/edge/community" >> /etc/apk/repositories && \
+    echo "https://dl-cdn.alpinelinux.org/alpine/edge/testing" >> /etc/apk/repositories && \
+    apk update && \
+    apk add --no-cache \
+    build-base \
+    scons \
+    git \
+    wayland-dev \
+    wayland-protocols \
+    libxkbcommon-dev \
+    libxi-dev \
+    libxcursor-dev \
+    libxinerama-dev \
+    libxrandr-dev \
+    mesa-dev \
+    eudev-dev \
+    zlib-dev \
+    libpng-dev \
+    libwebp-dev \
+    libogg-dev \
+    libvorbis-dev \
+    opusfile-dev \
+    freetype-dev \
+    enet-dev \
+    dbus-dev
+
 RUN git clone --branch 4.3-stable --depth 1 https://github.com/godotengine/godot.git /godot_src
 WORKDIR /godot_src
 RUN sed -i '/#include <unordered_map>/a #include <cstdint>' thirdparty/glslang/SPIRV/SpvBuilder.h
 RUN sed -i '/#include <list>/a #include <cstdint>' thirdparty/thorvg/inc/thorvg.h
-RUN scons platform=linuxbsd target=editor dev_build=no production=yes use_lto=none lto=none CCFLAGS="-U_FORTIFY_SOURCE" -j4
+# Added wayland=yes so the binary supports the --display-driver wayland flag
+RUN scons platform=linuxbsd target=template_release wayland=yes dev_build=no production=yes use_lto=none lto=none CCFLAGS="-U_FORTIFY_SOURCE" -j4
 
-# --- Runtime & Web Frontend Stage ---
+# --- Stage 3: Runtime & Web Frontend Stage ---
 FROM alpine:latest
 
 RUN echo "https://dl-cdn.alpinelinux.org/alpine/edge/community" >> /etc/apk/repositories && \
@@ -80,7 +109,9 @@ WORKDIR /app
 COPY --from=builder /app/p9wl-rdp-alpine /app/p9wl-rdp-alpine
 COPY --from=builder /app/server.crt /app/server.crt
 COPY --from=builder /app/server.key /app/server.key
-COPY --from=builder /godot_src/bin/godot.linuxbsd.editor.arm64 /usr/local/bin/godot
+
+RUN mkdir -p /usr/local/bin
+COPY --from=godot-builder /godot_src/bin/godot.* /usr/local/bin/godot
 
 RUN chmod 600 /app/server.key && chmod 644 /app/server.crt
 
@@ -119,24 +150,52 @@ RUN cat << 'EOF' > /app/godot_project/main.tscn
 script = ExtResource("1_script")
 EOF
 
-# 3. Inline main.gd script
+# 3. Inline main.gd script with WASD and Arrow Key controls for two separate balls
 RUN cat << 'EOF' > /app/godot_project/scripts/main.gd
 extends Node2D
 
-var pos := Vector2(640, 400)
-var vel := Vector2(240, 180)
+# Ball 1: Controlled by WASD (Cyan color)
+var pos1 := Vector2(400, 400)
+var speed1 := 300.0
+
+# Ball 2: Controlled by Arrow Keys (Orange/Coral color)
+var pos2 := Vector2(880, 400)
+var speed2 := 300.0
 
 func _process(delta: float) -> void:
-	pos += vel * delta
-	if pos.x < 100 or pos.x > 1180:
-		vel.x *= -1
-	if pos.y < 100 or pos.y > 700:
-		vel.y *= -1
-	queue_redraw()
+    # --- Ball 1 Movement (WASD) ---
+    var dir1 := Vector2.ZERO
+    if Input.is_key_pressed(KEY_W): dir1.y -= 1.0
+    if Input.is_key_pressed(KEY_S): dir1.y += 1.0
+    if Input.is_key_pressed(KEY_A): dir1.x -= 1.0
+    if Input.is_key_pressed(KEY_D): dir1.x += 1.0
+    
+    pos1 += dir1.normalized() * speed1 * delta
+    pos1.x = clamp(pos1.x, 40, 1240)
+    pos1.y = clamp(pos1.y, 40, 760)
+
+    # --- Ball 2 Movement (Arrow Keys) ---
+    var dir2 := Vector2.ZERO
+    if Input.is_key_pressed(KEY_UP):    dir2.y -= 1.0
+    if Input.is_key_pressed(KEY_DOWN):  dir2.y += 1.0
+    if Input.is_key_pressed(KEY_LEFT):  dir2.x -= 1.0
+    if Input.is_key_pressed(KEY_RIGHT): dir2.x += 1.0
+
+    pos2 += dir2.normalized() * speed2 * delta
+    pos2.x = clamp(pos2.x, 40, 1240)
+    pos2.y = clamp(pos2.y, 40, 760)
+
+    queue_redraw()
 
 func _draw() -> void:
-	draw_rect(Rect2(0, 0, 1280, 800), Color(0.06, 0.09, 0.16))
-	draw_circle(pos, 40, Color(0.3, 0.85, 1.0))
+    # Background
+    draw_rect(Rect2(0, 0, 1280, 800), Color(0.06, 0.09, 0.16))
+    
+    # Draw Ball 1 (WASD - Cyan)
+    draw_circle(pos1, 40, Color(0.3, 0.85, 1.0))
+    
+    # Draw Ball 2 (Arrow Keys - Coral/Orange)
+    draw_circle(pos2, 40, Color(1.0, 0.55, 0.2))
 EOF
 
 # --- Web Frontend Setup with Deflate Compressed Frame Streaming ---
@@ -329,13 +388,17 @@ app.get('/', (req, res) => {
         };
 
         window.addEventListener('keydown', (e) => {
-            const scancode = codeToEvdev[e.code] || e.keyCode;
-            sendInput('key', { rune: scancode, pressed: 1 });
+            const scancode = codeToEvdev[e.code];
+            if (scancode !== undefined) {
+                sendInput('key', { rune: scancode, pressed: 1 });
+            }
         });
 
         window.addEventListener('keyup', (e) => {
-            const scancode = codeToEvdev[e.code] || e.keyCode;
-            sendInput('key', { rune: scancode, pressed: 0 });
+            const scancode = codeToEvdev[e.code];
+            if (scancode !== undefined) {
+                sendInput('key', { rune: scancode, pressed: 0 });
+            }
         });
 
         function togglePlayPause() {
