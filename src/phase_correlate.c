@@ -14,11 +14,8 @@
 #include <math.h>
 #include <pthread.h>
 #include <fftw3.h>
-#include <freerdp/log.h>
 
 #include "types.h"
-
-#define TAG FREERDP_TAG("p9wl.phase_correlate")
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846

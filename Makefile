@@ -1,9 +1,9 @@
 CC = gcc
 CFLAGS = -O3 -Wall -Wextra -DWLR_USE_UNSTABLE -Isrc -I. -include sys/types.h -include sys/select.h -include unistd.h
-CFLAGS += $(shell pkg-config --cflags wlroots-0.19 wayland-server xkbcommon pixman-1 freerdp3 winpr3)
+CFLAGS += $(shell pkg-config --cflags wlroots-0.19 wayland-server xkbcommon pixman-1)
 CFLAGS += -g -O0
 
-LDFLAGS = $(shell pkg-config --libs wlroots-0.19 wayland-server xkbcommon pixman-1 freerdp3 winpr3)
+LDFLAGS = $(shell pkg-config --libs wlroots-0.19 wayland-server xkbcommon pixman-1)
 LDFLAGS += -lpthread -lm -lssl -lcrypto -lfftw3f
 
 SRCS = src/main.c \
@@ -27,7 +27,7 @@ SRCS = src/main.c \
 
 OBJS = $(SRCS:.c=.o)
 HDRS = src/types.h xdg-shell-protocol.h
-TARGET = p9wl-rdp-alpine
+TARGET = p9wl-alpine
 
 .PHONY: all clean
 

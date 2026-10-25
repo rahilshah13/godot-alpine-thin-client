@@ -1,5 +1,5 @@
 /*
- * scroll.c - Scroll detection and FreeRDP surface update command generation
+ * scroll.c - Scroll detection and surface update command generation
  */
 
 #define _GNU_SOURCE
@@ -7,10 +7,8 @@
 #include <string.h>
 #include <stdlib.h>
 #include <time.h>
-#include <freerdp/log.h>
+#include <wlr/util/log.h>
 #include "types.h"
-
-#define TAG FREERDP_TAG("p9wl.scroll")
 
 static struct scroll_timing timing;
 extern int cmd_copy(uint8_t *dst, uint32_t dst_id, uint32_t src_id, uint32_t clip_id, int dst_x1, int dst_y1, int dst_x2, int dst_y2, int src_x1, int src_y1);
@@ -59,7 +57,7 @@ static void detect_region_scroll(void *ctx, int reg_idx) {
     
     if (abs_dx >= max_scroll_x || abs_dy >= max_scroll_y) return;
     
-    WLog_WARN(TAG, "Region %d: FFT detected scroll dx=%d dy=%d", reg_idx, dx, dy);
+    wlr_log(WLR_INFO, "Region %d: FFT detected scroll dx=%d dy=%d", reg_idx, dx, dy);
 
     struct scroll_rects rects;
     compute_scroll_rects(rx1, ry1, rx2, ry2, dx, dy, &rects);
@@ -153,8 +151,8 @@ static void detect_region_scroll(void *ctx, int reg_idx) {
     
     if (bytes_no_scroll == 0) return;
     if (bytes_with_scroll > bytes_no_scroll) {
-        WLog_DBG(TAG, "Region %d: REJECTED - scroll costs %d more bytes",
-                 reg_idx, bytes_with_scroll - bytes_no_scroll);
+        wlr_log(WLR_DEBUG, "Region %d: REJECTED - scroll costs %d more bytes",
+                reg_idx, bytes_with_scroll - bytes_no_scroll);
         return;
     }
     
@@ -164,7 +162,7 @@ static void detect_region_scroll(void *ctx, int reg_idx) {
     
     int saved = bytes_no_scroll - bytes_with_scroll;
     int pct = bytes_no_scroll > 0 ? (saved * 100 / bytes_no_scroll) : 0;
-    WLog_INFO(TAG, "Region %d: ACCEPTED - saves %d bytes (%d%%)", reg_idx, saved, pct);
+    wlr_log(WLR_INFO, "Region %d: ACCEPTED - saves %d bytes (%d%%)", reg_idx, saved, pct);
 }
 
 void scroll_init(void) {
@@ -236,8 +234,8 @@ void detect_scroll(struct server *s, uint32_t *send_buf) {
     timing.regions_processed = s->num_scroll_regions;
     
     if (detected_count > 0) {
-        WLog_INFO(TAG, "Scroll detected in %d/%d regions (%.1fus)",
-                  detected_count, s->num_scroll_regions, timing.total_us);
+        wlr_log(WLR_INFO, "Scroll detected in %d/%d regions (%.1fus)",
+                detected_count, s->num_scroll_regions, timing.total_us);
     }
 }
 
@@ -324,7 +322,7 @@ int write_scroll_commands(struct server *s, uint8_t *batch, size_t max_size) {
         if (r.src_x2 <= r.src_x1 || r.dst_x2 <= r.dst_x1) continue;
         
         if (off + 45 > (int)max_size) {
-            WLog_ERR(TAG, "Scroll batch overflow");
+            wlr_log(WLR_ERROR, "Scroll batch overflow");
             break;
         }
         
@@ -333,7 +331,7 @@ int write_scroll_commands(struct server *s, uint8_t *batch, size_t max_size) {
                        r.dst_x1, r.dst_y1, r.dst_x2, r.dst_y2,
                        r.src_x1, r.src_y1);
         
-        WLog_DBG(TAG, "Scroll %d: dy=%d dx=%d", i, dy, dx);
+        wlr_log(WLR_DEBUG, "Scroll %d: dy=%d dx=%d", i, dy, dx);
     }
     
     return off;

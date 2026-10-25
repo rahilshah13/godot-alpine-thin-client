@@ -12,8 +12,6 @@
 #include <wlr/util/log.h>
 #include <openssl/ssl.h>
 #include <openssl/x509.h>
-#include <freerdp/freerdp.h>
-#include <freerdp/input.h>
 
 #define TILE_SIZE           16
 #define MAX_SCROLL_REGIONS  128
@@ -327,7 +325,7 @@ P9WL_API int compress_tiles_parallel(struct tile_work *tiles,
                                      struct tile_result *results, 
                                      int count);
 
-/* ============== Draw / RDP API ============== */
+/* ============== Draw API ============== */
 
 int init_draw(struct server *s);
 int relookup_window(struct server *s);
@@ -382,55 +380,6 @@ void scroll_cleanup(void);
 int cmd_copy(uint8_t *dst, uint32_t dst_id, uint32_t src_id, uint32_t clip_id, 
              int dst_x1, int dst_y1, int dst_x2, int dst_y2, 
              int src_x1, int src_y1);
-
-static inline int rdp_cmd_draw(uint8_t *buf,
-                               uint32_t surface_id, uint32_t codec_id,
-                               int dx1, int dy1, int dx2, int dy2) {
-    if (!buf) return 24;
-    PUT32(buf + 0, surface_id);
-    PUT32(buf + 4, codec_id);
-    PUT16(buf + 8, (uint16_t)dx1);
-    PUT16(buf + 10, (uint16_t)dy1);
-    PUT16(buf + 12, (uint16_t)(dx2 - dx1));
-    PUT16(buf + 14, (uint16_t)(dy2 - dy1));
-    return 24;
-}
-
-static inline int rdp_cmd_copy(uint8_t *buf,
-                               uint32_t surface_id, uint32_t codec_id,
-                               int dx1, int dy1, int dx2, int dy2,
-                               int sx, int sy) {
-    (void)sx;
-    (void)sy;
-    return rdp_cmd_draw(buf, surface_id, codec_id, dx1, dy1, dx2, dy2);
-}
-
-static inline int rdp_cmd_fill(uint8_t *buf,
-                               uint32_t surface_id, uint32_t codec_id,
-                               int x1, int y1, int x2, int y2) {
-    return rdp_cmd_draw(buf, surface_id, codec_id, x1, y1, x2, y2);
-}
-
-static inline int rdp_cmd_load_hdr(uint8_t *buf, uint32_t surface_id,
-                                   int x1, int y1, int x2, int y2) {
-    if (!buf) return 20;
-    PUT32(buf + 0, surface_id);
-    PUT16(buf + 4, (uint16_t)x1);
-    PUT16(buf + 6, (uint16_t)y1);
-    PUT16(buf + 8, (uint16_t)(x2 - x1));
-    PUT16(buf + 10, (uint16_t)(y2 - y1));
-    return 20;
-}
-
-static inline int rdp_cmd_loadraw_hdr(uint8_t *buf, uint32_t surface_id,
-                                      int x1, int y1, int x2, int y2) {
-    return rdp_cmd_load_hdr(buf, surface_id, x1, y1, x2, y2);
-}
-
-static inline int rdp_cmd_flush(uint8_t *buf) {
-    if (buf) buf[0] = 0;
-    return 1;
-}
 
 static inline void tile_bounds(int tx, int ty, int frame_w, int frame_h,
                                int *x1, int *y1, int *w, int *h) {
@@ -543,8 +492,6 @@ int tls_cert_file_fingerprint(const char *path, char *out, int outlen);
 void input_queue_init(struct input_queue *q);
 void input_queue_push(struct input_queue *q, struct input_event *ev);
 int input_queue_pop(struct input_queue *q, struct input_event *ev);
-void rdp_handle_mouse(struct server *s, uint16_t flags, uint16_t x, uint16_t y);
-void rdp_handle_keyboard(struct server *s, uint16_t flags, uint8_t keycode);
 
 struct key_map {
     uint32_t keycode;
@@ -582,7 +529,6 @@ void *send_thread_func(void *arg);
 /* ============== Clipboard Interop ============== */
 
 int clipboard_init(struct server *s);
-void rdp_to_snarf_write(struct server *s, const void *data, size_t size);
 void clipboard_cleanup(struct server *s);
 
 /* ============== Focus Manager API ============== */
